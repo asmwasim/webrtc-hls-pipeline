@@ -1,0 +1,10 @@
+segments/
+*.ts
+!migrations/**
+web/node_modules/
+web/dist/
+.env
+*.exe
+*.test
+*.out
+tmp/
