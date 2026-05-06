@@ -24,6 +24,7 @@ import (
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/config"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/events"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/hls"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/recording"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/session"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/transcode"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/whip"
@@ -69,6 +70,9 @@ func main() {
 	chatRepo := chat.NewRepository(pool)
 	chatHub := chat.NewHub(rdb, chatRepo)
 	defer chatHub.Stop()
+	recWorker := recording.NewWorker(pool, sessionRepo, publisher, cfg.SegmentDir)
+	recWorker.Start()
+	defer recWorker.Stop()
 	trackMgr := whip.NewTrackManager()
 	whipHandler := whip.NewHandler(sessionRepo, publisher)
 	whipHandler.OnTrack(func(sessionID uuid.UUID, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
@@ -86,6 +90,11 @@ func main() {
 				log.Error().Err(err).Str("session_id", sessionID.String()).Msg("failed to start transcoder")
 			}
 		}()
+	})
+	whipHandler.OnDisconnect(func(sessionID uuid.UUID, tenantID uuid.UUID) {
+		transcodeMgr.Stop(sessionID)
+		trackMgr.Remove(sessionID)
+		recWorker.Enqueue(sessionID, tenantID)
 	})
 
 	r := chi.NewRouter()
@@ -114,6 +123,7 @@ func main() {
 				r.With(jwtAuth.Authenticate).Get("/watch", hlsHandler.HandleWatch())
 				r.With(jwtAuth.Authenticate).Get("/chat", chat.HandleWebSocket(chatHub))
 				r.With(jwtAuth.Authenticate).Get("/chat/history", chat.HandleHistory(chatRepo))
+				r.With(jwtAuth.Authenticate).Get("/recording", recording.HandleGetRecording(pool))
 			})
 		})
 	})
