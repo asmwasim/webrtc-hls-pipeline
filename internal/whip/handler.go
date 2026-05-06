@@ -22,6 +22,7 @@ type Handler struct {
 	sessionRepo *session.Repository
 	publisher   *events.Publisher
 	trackCB     func(sessionID uuid.UUID, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver)
+	disconnectCB func(sessionID uuid.UUID, tenantID uuid.UUID)
 }
 
 type StreamSession struct {
@@ -39,6 +40,10 @@ func NewHandler(sessionRepo *session.Repository, publisher *events.Publisher) *H
 
 func (h *Handler) OnTrack(cb func(sessionID uuid.UUID, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver)) {
 	h.trackCB = cb
+}
+
+func (h *Handler) OnDisconnect(cb func(sessionID uuid.UUID, tenantID uuid.UUID)) {
+	h.disconnectCB = cb
 }
 
 func (h *Handler) GetStreamSession(sessionID uuid.UUID) *StreamSession {
@@ -125,6 +130,9 @@ func (h *Handler) HandleWHIP() http.HandlerFunc {
 					"session_id": sessionID.String(),
 					"tenant_id":  sess.TenantID.String(),
 				})
+				if h.disconnectCB != nil {
+					h.disconnectCB(sessionID, sess.TenantID)
+				}
 			}
 		})
 
