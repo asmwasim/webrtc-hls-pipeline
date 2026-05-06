@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/auth"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/metrics"
 )
 
 var upgrader = websocket.Upgrader{
@@ -58,6 +59,7 @@ func HandleWebSocket(hub *Hub) http.HandlerFunc {
 
 		room := hub.GetOrCreateRoom(sessionID)
 		room.AddClient(client)
+		metrics.WebSocketConnections.Inc()
 
 		go writePump(conn, client)
 		go readPump(conn, client, hub, sessionID)
@@ -68,6 +70,7 @@ func readPump(conn *websocket.Conn, client *Client, hub *Hub, sessionID uuid.UUI
 	defer func() {
 		room := hub.GetOrCreateRoom(sessionID)
 		room.RemoveClient(client)
+		metrics.WebSocketConnections.Dec()
 		conn.Close()
 	}()
 

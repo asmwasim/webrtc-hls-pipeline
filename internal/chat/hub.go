@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
+
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/metrics"
 )
 
 type Message struct {
@@ -83,6 +85,8 @@ func (h *Hub) Publish(ctx context.Context, msg *Message) error {
 	if err != nil {
 		return err
 	}
+
+	metrics.ChatMessagesTotal.Inc()
 
 	channel := "chat:" + msg.SessionID.String()
 	if err := h.rdb.Publish(ctx, channel, data).Err(); err != nil {

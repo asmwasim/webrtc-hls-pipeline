@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/events"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/metrics"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/session"
 )
 
@@ -110,6 +111,7 @@ func (h *Handler) HandleWHIP() http.HandlerFunc {
 
 			switch state {
 			case webrtc.PeerConnectionStateConnected:
+				metrics.StreamsActive.Inc()
 				if err := h.sessionRepo.UpdateStatus(r.Context(), sessionID, "live"); err != nil {
 					log.Error().Err(err).Msg("failed to update session status to live")
 				}
@@ -122,6 +124,7 @@ func (h *Handler) HandleWHIP() http.HandlerFunc {
 			case webrtc.PeerConnectionStateDisconnected,
 				webrtc.PeerConnectionStateFailed,
 				webrtc.PeerConnectionStateClosed:
+				metrics.StreamsActive.Dec()
 				h.removeSession(sessionID)
 				if err := h.sessionRepo.UpdateStatus(r.Context(), sessionID, "ended"); err != nil {
 					log.Error().Err(err).Msg("failed to update session status to ended")

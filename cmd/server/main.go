@@ -20,6 +20,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/auth"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/metrics"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/chat"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/config"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/events"
@@ -31,6 +32,7 @@ import (
 )
 
 func main() {
+	metrics.Register()
 	cfg := config.Load()
 
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
