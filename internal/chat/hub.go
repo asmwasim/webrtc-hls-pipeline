@@ -37,6 +37,8 @@ type Room struct {
 	sessionID uuid.UUID
 	clients   map[*Client]bool
 	mu        sync.RWMutex
+	onEmpty   func()
+	cancel    context.CancelFunc
 }
 
 type Client struct {
@@ -69,13 +71,18 @@ func (h *Hub) GetOrCreateRoom(sessionID uuid.UUID) *Room {
 		return room
 	}
 
+	roomCtx, roomCancel := context.WithCancel(h.ctx)
 	room := &Room{
 		sessionID: sessionID,
 		clients:   make(map[*Client]bool),
+		cancel:    roomCancel,
+	}
+	room.onEmpty = func() {
+		h.removeRoom(sessionID)
 	}
 	h.rooms[sessionID] = room
 
-	go h.subscribeRedis(sessionID, room)
+	go h.subscribeRedis(roomCtx, sessionID, room)
 
 	return room
 }
@@ -102,16 +109,29 @@ func (h *Hub) Publish(ctx context.Context, msg *Message) error {
 	return nil
 }
 
-func (h *Hub) subscribeRedis(sessionID uuid.UUID, room *Room) {
+func (h *Hub) removeRoom(sessionID uuid.UUID) {
+	h.mu.Lock()
+	room, exists := h.rooms[sessionID]
+	if exists {
+		delete(h.rooms, sessionID)
+	}
+	h.mu.Unlock()
+
+	if exists && room.cancel != nil {
+		room.cancel()
+	}
+}
+
+func (h *Hub) subscribeRedis(ctx context.Context, sessionID uuid.UUID, room *Room) {
 	channel := "chat:" + sessionID.String()
-	sub := h.rdb.Subscribe(h.ctx, channel)
+	sub := h.rdb.Subscribe(ctx, channel)
 	defer sub.Close()
 
 	ch := sub.Channel()
 
 	for {
 		select {
-		case <-h.ctx.Done():
+		case <-ctx.Done():
 			return
 		case msg, ok := <-ch:
 			if !ok {
@@ -131,8 +151,13 @@ func (r *Room) AddClient(client *Client) {
 func (r *Room) RemoveClient(client *Client) {
 	r.mu.Lock()
 	delete(r.clients, client)
+	empty := len(r.clients) == 0
 	r.mu.Unlock()
 	close(client.Send)
+
+	if empty && r.onEmpty != nil {
+		r.onEmpty()
+	}
 }
 
 func (r *Room) Broadcast(data []byte) {

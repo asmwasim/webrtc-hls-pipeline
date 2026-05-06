@@ -40,6 +40,13 @@ func NewManager(segmentDir string) *Manager {
 }
 
 func (m *Manager) Start(ctx context.Context, sessionID uuid.UUID, tracks *whip.TrackPair) error {
+	m.mu.Lock()
+	if _, exists := m.pipelines[sessionID]; exists {
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+
 	outDir := filepath.Join(m.segmentDir, sessionID.String())
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return fmt.Errorf("mkdir segments: %w", err)
@@ -130,11 +137,14 @@ func (p *Pipeline) pumpTracks(tracks *whip.TrackPair) {
 		}()
 	}
 
+	// Drain audio track to prevent WebRTC backpressure.
+	// Audio is not piped to FFmpeg's H264 stdin — a future iteration
+	// will add audio via a separate FFmpeg input (RTP over UDP).
 	if tracks.Audio != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p.pumpAudio(tracks.Audio)
+			p.drainTrack(tracks.Audio)
 		}()
 	}
 
@@ -161,18 +171,10 @@ func (p *Pipeline) pumpVideo(reader *whip.TrackReader) {
 	}
 }
 
-func (p *Pipeline) pumpAudio(reader *whip.TrackReader) {
+func (p *Pipeline) drainTrack(reader *whip.TrackReader) {
 	for {
-		pkt, err := reader.ReadRTP()
+		_, err := reader.ReadRTP()
 		if err != nil {
-			if err != io.EOF {
-				log.Error().Err(err).Str("session_id", p.sessionID.String()).Msg("audio read error")
-			}
-			return
-		}
-
-		if _, err := p.stdin.Write(pkt.Payload); err != nil {
-			log.Error().Err(err).Str("session_id", p.sessionID.String()).Msg("audio write error")
 			return
 		}
 	}

@@ -16,7 +16,10 @@ export function ChatPanel({ sessionId }: Props) {
     socketRef.current = socket;
 
     socket.onMessage((msg) => {
-      setMessages((prev) => [...prev, msg]);
+      setMessages((prev) => {
+        const next = [...prev, msg];
+        return next.length > 500 ? next.slice(-500) : next;
+      });
     });
 
     socket.connect(sessionId);

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -130,16 +131,20 @@ func (w *Worker) concatenateSegments(dir, outputPath string) error {
 		return err
 	}
 
+	// Only concatenate the highest quality variant (stream_0_*.ts)
 	var tsFiles []string
 	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".ts") {
-			tsFiles = append(tsFiles, entry.Name())
+		name := entry.Name()
+		if strings.HasPrefix(name, "stream_0_") && strings.HasSuffix(name, ".ts") {
+			tsFiles = append(tsFiles, name)
 		}
 	}
 
 	if len(tsFiles) == 0 {
-		return fmt.Errorf("no .ts segments found")
+		return fmt.Errorf("no .ts segments found for variant 0")
 	}
+
+	sort.Strings(tsFiles)
 
 	concatList := filepath.Join(dir, "concat.txt")
 	var lines []string

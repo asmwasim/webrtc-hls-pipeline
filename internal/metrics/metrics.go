@@ -8,10 +8,10 @@ var (
 		Help: "Number of currently active streams",
 	})
 
-	ViewersActive = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	ViewersActive = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "viewers_active",
-		Help: "Number of active viewers per session",
-	}, []string{"session_id"})
+		Help: "Number of active viewers",
+	})
 
 	ChatMessagesTotal = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "chat_messages_total",

@@ -3,6 +3,7 @@ package whip
 import (
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/pion/rtp"
@@ -23,8 +24,8 @@ type TrackPair struct {
 type TrackReader struct {
 	track  *webrtc.TrackRemote
 	done   chan struct{}
-	closed bool
-	mu     sync.Mutex
+	closed atomic.Bool
+	once   sync.Once
 }
 
 func NewTrackPair(sessionID uuid.UUID) *TrackPair {
@@ -66,25 +67,18 @@ func (tp *TrackPair) Ready() <-chan struct{} {
 }
 
 func (tr *TrackReader) ReadRTP() (*rtp.Packet, error) {
-	tr.mu.Lock()
-	if tr.closed {
-		tr.mu.Unlock()
+	if tr.closed.Load() {
 		return nil, io.EOF
 	}
-	tr.mu.Unlock()
-
 	pkt, _, err := tr.track.ReadRTP()
 	return pkt, err
 }
 
 func (tr *TrackReader) Close() {
-	tr.mu.Lock()
-	defer tr.mu.Unlock()
-
-	if !tr.closed {
-		tr.closed = true
+	tr.once.Do(func() {
+		tr.closed.Store(true)
 		close(tr.done)
-	}
+	})
 }
 
 func (tr *TrackReader) Done() <-chan struct{} {

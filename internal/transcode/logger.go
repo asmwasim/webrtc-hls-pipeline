@@ -12,12 +12,18 @@ type ffmpegLogger struct {
 	buf       bytes.Buffer
 }
 
+const maxLogBuf = 64 * 1024
+
 func (l *ffmpegLogger) Write(p []byte) (int, error) {
 	l.buf.Write(p)
 
 	for {
 		line, err := l.buf.ReadBytes('\n')
 		if err != nil {
+			if len(line) > maxLogBuf {
+				line = line[len(line)-maxLogBuf:]
+			}
+			l.buf.Reset()
 			l.buf.Write(line)
 			break
 		}

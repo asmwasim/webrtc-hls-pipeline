@@ -1,11 +1,11 @@
 package whip
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"sync"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/nack"
@@ -13,22 +13,26 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/events"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/httputil"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/metrics"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/session"
 )
 
 type Handler struct {
-	mu          sync.RWMutex
-	sessions    map[uuid.UUID]*StreamSession
-	sessionRepo *session.Repository
-	publisher   *events.Publisher
-	trackCB     func(sessionID uuid.UUID, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver)
+	mu           sync.RWMutex
+	sessions     map[uuid.UUID]*StreamSession
+	sessionRepo  *session.Repository
+	publisher    *events.Publisher
+	trackCB      func(sessionID uuid.UUID, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver)
 	disconnectCB func(sessionID uuid.UUID, tenantID uuid.UUID)
 }
 
 type StreamSession struct {
-	SessionID uuid.UUID
-	PC        *webrtc.PeerConnection
+	SessionID    uuid.UUID
+	TenantID     uuid.UUID
+	TeacherID    uuid.UUID
+	PC           *webrtc.PeerConnection
+	disconnected sync.Once
 }
 
 func NewHandler(sessionRepo *session.Repository, publisher *events.Publisher) *Handler {
@@ -55,40 +59,46 @@ func (h *Handler) GetStreamSession(sessionID uuid.UUID) *StreamSession {
 
 func (h *Handler) HandleWHIP() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sessionID, err := uuid.Parse(chi.URLParam(r, "sessionID"))
-		if err != nil {
-			http.Error(w, `{"error":"invalid session id"}`, http.StatusBadRequest)
+		sessionID, ok := httputil.ParseSessionID(r)
+		if !ok {
+			httputil.WriteError(w, http.StatusBadRequest, "invalid session id")
 			return
 		}
 
 		sess, err := h.sessionRepo.GetByID(r.Context(), sessionID)
 		if err != nil {
-			http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+			httputil.WriteError(w, http.StatusNotFound, "session not found")
 			return
 		}
 
-		if sess.Status == "live" {
-			http.Error(w, `{"error":"session already live"}`, http.StatusConflict)
+		if sess.Status == session.StatusLive {
+			httputil.WriteError(w, http.StatusConflict, "session already live")
 			return
 		}
 
-		contentType := r.Header.Get("Content-Type")
-		if contentType != "application/sdp" {
-			http.Error(w, `{"error":"content-type must be application/sdp"}`, http.StatusUnsupportedMediaType)
+		if r.Header.Get("Content-Type") != "application/sdp" {
+			httputil.WriteError(w, http.StatusUnsupportedMediaType, "content-type must be application/sdp")
 			return
 		}
 
 		offer, err := io.ReadAll(r.Body)
 		if err != nil {
-			http.Error(w, `{"error":"failed to read offer"}`, http.StatusBadRequest)
+			httputil.WriteError(w, http.StatusBadRequest, "failed to read offer")
 			return
 		}
 
 		pc, err := h.createPeerConnection()
 		if err != nil {
 			log.Error().Err(err).Msg("failed to create peer connection")
-			http.Error(w, `{"error":"failed to create peer connection"}`, http.StatusInternalServerError)
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to create peer connection")
 			return
+		}
+
+		ss := &StreamSession{
+			SessionID: sessionID,
+			TenantID:  sess.TenantID,
+			TeacherID: sess.TeacherID,
+			PC:        pc,
 		}
 
 		pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
@@ -112,10 +122,11 @@ func (h *Handler) HandleWHIP() http.HandlerFunc {
 			switch state {
 			case webrtc.PeerConnectionStateConnected:
 				metrics.StreamsActive.Inc()
-				if err := h.sessionRepo.UpdateStatus(r.Context(), sessionID, "live"); err != nil {
+				ctx := context.Background()
+				if err := h.sessionRepo.UpdateStatus(ctx, sessionID, session.StatusLive); err != nil {
 					log.Error().Err(err).Msg("failed to update session status to live")
 				}
-				h.publisher.Publish(r.Context(), events.StreamStarted, map[string]string{
+				h.publisher.Publish(ctx, events.StreamStarted, map[string]string{
 					"session_id": sessionID.String(),
 					"tenant_id":  sess.TenantID.String(),
 					"teacher_id": sess.TeacherID.String(),
@@ -124,18 +135,21 @@ func (h *Handler) HandleWHIP() http.HandlerFunc {
 			case webrtc.PeerConnectionStateDisconnected,
 				webrtc.PeerConnectionStateFailed,
 				webrtc.PeerConnectionStateClosed:
-				metrics.StreamsActive.Dec()
-				h.removeSession(sessionID)
-				if err := h.sessionRepo.UpdateStatus(r.Context(), sessionID, "ended"); err != nil {
-					log.Error().Err(err).Msg("failed to update session status to ended")
-				}
-				h.publisher.Publish(r.Context(), events.StreamEnded, map[string]string{
-					"session_id": sessionID.String(),
-					"tenant_id":  sess.TenantID.String(),
+				ss.disconnected.Do(func() {
+					metrics.StreamsActive.Dec()
+					h.removeSession(sessionID)
+					ctx := context.Background()
+					if err := h.sessionRepo.UpdateStatus(ctx, sessionID, session.StatusEnded); err != nil {
+						log.Error().Err(err).Msg("failed to update session status to ended")
+					}
+					h.publisher.Publish(ctx, events.StreamEnded, map[string]string{
+						"session_id": sessionID.String(),
+						"tenant_id":  sess.TenantID.String(),
+					})
+					if h.disconnectCB != nil {
+						h.disconnectCB(sessionID, sess.TenantID)
+					}
 				})
-				if h.disconnectCB != nil {
-					h.disconnectCB(sessionID, sess.TenantID)
-				}
 			}
 		})
 
@@ -145,7 +159,7 @@ func (h *Handler) HandleWHIP() http.HandlerFunc {
 		}); err != nil {
 			pc.Close()
 			log.Error().Err(err).Msg("failed to set remote description")
-			http.Error(w, `{"error":"failed to set remote description"}`, http.StatusBadRequest)
+			httputil.WriteError(w, http.StatusBadRequest, "failed to set remote description")
 			return
 		}
 
@@ -153,7 +167,7 @@ func (h *Handler) HandleWHIP() http.HandlerFunc {
 		if err != nil {
 			pc.Close()
 			log.Error().Err(err).Msg("failed to create answer")
-			http.Error(w, `{"error":"failed to create answer"}`, http.StatusInternalServerError)
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to create answer")
 			return
 		}
 
@@ -162,17 +176,14 @@ func (h *Handler) HandleWHIP() http.HandlerFunc {
 		if err := pc.SetLocalDescription(answer); err != nil {
 			pc.Close()
 			log.Error().Err(err).Msg("failed to set local description")
-			http.Error(w, `{"error":"failed to set local description"}`, http.StatusInternalServerError)
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to set local description")
 			return
 		}
 
 		<-gatherComplete
 
 		h.mu.Lock()
-		h.sessions[sessionID] = &StreamSession{
-			SessionID: sessionID,
-			PC:        pc,
-		}
+		h.sessions[sessionID] = ss
 		h.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/sdp")
@@ -184,9 +195,9 @@ func (h *Handler) HandleWHIP() http.HandlerFunc {
 
 func (h *Handler) HandleDeleteResource() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sessionID, err := uuid.Parse(chi.URLParam(r, "sessionID"))
-		if err != nil {
-			http.Error(w, `{"error":"invalid session id"}`, http.StatusBadRequest)
+		sessionID, ok := httputil.ParseSessionID(r)
+		if !ok {
+			httputil.WriteError(w, http.StatusBadRequest, "invalid session id")
 			return
 		}
 
@@ -195,12 +206,11 @@ func (h *Handler) HandleDeleteResource() http.HandlerFunc {
 		h.mu.RUnlock()
 
 		if ss == nil {
-			http.Error(w, `{"error":"no active stream"}`, http.StatusNotFound)
+			httputil.WriteError(w, http.StatusNotFound, "no active stream")
 			return
 		}
 
 		ss.PC.Close()
-		h.removeSession(sessionID)
 
 		w.WriteHeader(http.StatusOK)
 	}

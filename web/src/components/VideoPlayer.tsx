@@ -30,9 +30,13 @@ export function VideoPlayer({ src }: Props) {
       };
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = src;
-      video.addEventListener('loadedmetadata', () => {
-        video.play().catch(() => {});
-      });
+      const onLoaded = () => video.play().catch(() => {});
+      video.addEventListener('loadedmetadata', onLoaded);
+
+      return () => {
+        video.removeEventListener('loadedmetadata', onLoaded);
+        video.src = '';
+      };
     }
   }, [src]);
 

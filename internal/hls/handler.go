@@ -2,7 +2,6 @@ package hls
 
 import (
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -38,7 +37,7 @@ func (h *Handler) HandleWatch() http.HandlerFunc {
 			return
 		}
 
-		if sess.Status != "live" && sess.Status != "ended" {
+		if sess.Status != session.StatusLive && sess.Status != session.StatusEnded {
 			http.Error(w, `{"error":"stream not available"}`, http.StatusNotFound)
 			return
 		}
@@ -61,11 +60,6 @@ func (h *Handler) ServeSegments() http.HandlerFunc {
 		}
 
 		filePath := filepath.Join(h.segmentDir, sessionID, filename)
-
-		if _, err := os.Stat(filePath); os.IsNotExist(err) {
-			http.Error(w, "not found", http.StatusNotFound)
-			return
-		}
 
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
