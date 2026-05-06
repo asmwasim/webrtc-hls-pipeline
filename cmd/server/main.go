@@ -20,6 +20,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/auth"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/chat"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/config"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/events"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/hls"
@@ -65,6 +66,9 @@ func main() {
 	publisher := events.NewPublisher(rdb)
 	transcodeMgr := transcode.NewManager(cfg.SegmentDir)
 	hlsHandler := hls.NewHandler(cfg.SegmentDir, sessionRepo)
+	chatRepo := chat.NewRepository(pool)
+	chatHub := chat.NewHub(rdb, chatRepo)
+	defer chatHub.Stop()
 	trackMgr := whip.NewTrackManager()
 	whipHandler := whip.NewHandler(sessionRepo, publisher)
 	whipHandler.OnTrack(func(sessionID uuid.UUID, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
@@ -108,6 +112,8 @@ func main() {
 				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Post("/whip", whipHandler.HandleWHIP())
 				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Delete("/whip", whipHandler.HandleDeleteResource())
 				r.With(jwtAuth.Authenticate).Get("/watch", hlsHandler.HandleWatch())
+				r.With(jwtAuth.Authenticate).Get("/chat", chat.HandleWebSocket(chatHub))
+				r.With(jwtAuth.Authenticate).Get("/chat/history", chat.HandleHistory(chatRepo))
 			})
 		})
 	})
