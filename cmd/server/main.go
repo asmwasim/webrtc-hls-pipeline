@@ -11,7 +11,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pion/webrtc/v4"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
@@ -21,6 +23,7 @@ import (
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/config"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/events"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/session"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/transcode"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/whip"
 )
 
@@ -59,10 +62,25 @@ func main() {
 	jwtAuth := auth.NewJWTAuth(cfg.JWTSecret)
 	sessionRepo := session.NewRepository(pool)
 	publisher := events.NewPublisher(rdb)
+	transcodeMgr := transcode.NewManager(cfg.SegmentDir)
 	trackMgr := whip.NewTrackManager()
 	whipHandler := whip.NewHandler(sessionRepo, publisher)
-	whipHandler.OnTrack(trackMgr.HandleTrack)
-	_ = trackMgr
+	whipHandler.OnTrack(func(sessionID uuid.UUID, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		trackMgr.HandleTrack(sessionID, track, receiver)
+		pair := trackMgr.GetTrackPair(sessionID)
+		if pair == nil {
+			return
+		}
+		go func() {
+			<-pair.Ready()
+			if transcodeMgr.IsRunning(sessionID) {
+				return
+			}
+			if err := transcodeMgr.Start(context.Background(), sessionID, pair); err != nil {
+				log.Error().Err(err).Str("session_id", sessionID.String()).Msg("failed to start transcoder")
+			}
+		}()
+	})
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
