@@ -11,20 +11,28 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pion/webrtc/v4"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/auth"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/metrics"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/chat"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/config"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/events"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/hls"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/recording"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/session"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/transcode"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/whip"
 )
 
 func main() {
+	metrics.Register()
 	cfg := config.Load()
 
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
@@ -59,10 +67,37 @@ func main() {
 	jwtAuth := auth.NewJWTAuth(cfg.JWTSecret)
 	sessionRepo := session.NewRepository(pool)
 	publisher := events.NewPublisher(rdb)
+	transcodeMgr := transcode.NewManager(cfg.SegmentDir)
+	hlsHandler := hls.NewHandler(cfg.SegmentDir, sessionRepo)
+	chatRepo := chat.NewRepository(pool)
+	chatHub := chat.NewHub(rdb, chatRepo)
+	defer chatHub.Stop()
+	recWorker := recording.NewWorker(pool, sessionRepo, publisher, cfg.SegmentDir)
+	recWorker.Start()
+	defer recWorker.Stop()
 	trackMgr := whip.NewTrackManager()
 	whipHandler := whip.NewHandler(sessionRepo, publisher)
-	whipHandler.OnTrack(trackMgr.HandleTrack)
-	_ = trackMgr
+	whipHandler.OnTrack(func(sessionID uuid.UUID, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		trackMgr.HandleTrack(sessionID, track, receiver)
+		pair := trackMgr.GetTrackPair(sessionID)
+		if pair == nil {
+			return
+		}
+		go func() {
+			<-pair.Ready()
+			if transcodeMgr.IsRunning(sessionID) {
+				return
+			}
+			if err := transcodeMgr.Start(context.Background(), sessionID, pair); err != nil {
+				log.Error().Err(err).Str("session_id", sessionID.String()).Msg("failed to start transcoder")
+			}
+		}()
+	})
+	whipHandler.OnDisconnect(func(sessionID uuid.UUID, tenantID uuid.UUID) {
+		transcodeMgr.Stop(sessionID)
+		trackMgr.Remove(sessionID)
+		recWorker.Enqueue(sessionID, tenantID)
+	})
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -72,6 +107,10 @@ func main() {
 
 	r.Get("/health", healthHandler(pool, rdb))
 	r.Handle("/metrics", promhttp.Handler())
+
+	r.Route("/hls/{sessionID}", func(r chi.Router) {
+		r.Get("/*", hlsHandler.ServeSegments())
+	})
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Route("/sessions", func(r chi.Router) {
@@ -83,6 +122,10 @@ func main() {
 				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Post("/end", session.HandleEnd(sessionRepo))
 				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Post("/whip", whipHandler.HandleWHIP())
 				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Delete("/whip", whipHandler.HandleDeleteResource())
+				r.With(jwtAuth.Authenticate).Get("/watch", hlsHandler.HandleWatch())
+				r.With(jwtAuth.Authenticate).Get("/chat", chat.HandleWebSocket(chatHub))
+				r.With(jwtAuth.Authenticate).Get("/chat/history", chat.HandleHistory(chatRepo))
+				r.With(jwtAuth.Authenticate).Get("/recording", recording.HandleGetRecording(pool))
 			})
 		})
 	})
