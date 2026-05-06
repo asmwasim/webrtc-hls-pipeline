@@ -19,7 +19,9 @@ import (
 
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/auth"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/config"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/events"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/session"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/whip"
 )
 
 func main() {
@@ -56,6 +58,11 @@ func main() {
 
 	jwtAuth := auth.NewJWTAuth(cfg.JWTSecret)
 	sessionRepo := session.NewRepository(pool)
+	publisher := events.NewPublisher(rdb)
+	trackMgr := whip.NewTrackManager()
+	whipHandler := whip.NewHandler(sessionRepo, publisher)
+	whipHandler.OnTrack(trackMgr.HandleTrack)
+	_ = trackMgr
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -74,6 +81,8 @@ func main() {
 			r.Route("/{sessionID}", func(r chi.Router) {
 				r.With(jwtAuth.Authenticate).Get("/", session.HandleGet(sessionRepo))
 				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Post("/end", session.HandleEnd(sessionRepo))
+				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Post("/whip", whipHandler.HandleWHIP())
+				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Delete("/whip", whipHandler.HandleDeleteResource())
 			})
 		})
 	})
