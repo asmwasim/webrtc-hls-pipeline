@@ -22,6 +22,7 @@ import (
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/auth"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/config"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/events"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/hls"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/session"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/transcode"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/whip"
@@ -63,6 +64,7 @@ func main() {
 	sessionRepo := session.NewRepository(pool)
 	publisher := events.NewPublisher(rdb)
 	transcodeMgr := transcode.NewManager(cfg.SegmentDir)
+	hlsHandler := hls.NewHandler(cfg.SegmentDir, sessionRepo)
 	trackMgr := whip.NewTrackManager()
 	whipHandler := whip.NewHandler(sessionRepo, publisher)
 	whipHandler.OnTrack(func(sessionID uuid.UUID, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
@@ -91,6 +93,10 @@ func main() {
 	r.Get("/health", healthHandler(pool, rdb))
 	r.Handle("/metrics", promhttp.Handler())
 
+	r.Route("/hls/{sessionID}", func(r chi.Router) {
+		r.Get("/*", hlsHandler.ServeSegments())
+	})
+
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Route("/sessions", func(r chi.Router) {
 			r.With(jwtAuth.Authenticate).Get("/", session.HandleList(sessionRepo))
@@ -101,6 +107,7 @@ func main() {
 				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Post("/end", session.HandleEnd(sessionRepo))
 				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Post("/whip", whipHandler.HandleWHIP())
 				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Delete("/whip", whipHandler.HandleDeleteResource())
+				r.With(jwtAuth.Authenticate).Get("/watch", hlsHandler.HandleWatch())
 			})
 		})
 	})
