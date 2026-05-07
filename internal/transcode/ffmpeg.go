@@ -11,7 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/pion/webrtc/v4/pkg/media/h264writer"
+	"github.com/pion/rtp/codecs"
+	"github.com/pion/webrtc/v4/pkg/media/samplebuilder"
 	"github.com/rs/zerolog/log"
 
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/whip"
@@ -45,10 +46,15 @@ func (m *Manager) Start(ctx context.Context, sessionID uuid.UUID, tracks *whip.T
 		m.mu.Unlock()
 		return nil
 	}
+	// Hold a placeholder so no other goroutine starts a duplicate.
+	m.pipelines[sessionID] = nil
 	m.mu.Unlock()
 
 	outDir := filepath.Join(m.segmentDir, sessionID.String())
 	if err := os.MkdirAll(outDir, 0755); err != nil {
+		m.mu.Lock()
+		delete(m.pipelines, sessionID)
+		m.mu.Unlock()
 		return fmt.Errorf("mkdir segments: %w", err)
 	}
 
@@ -60,6 +66,9 @@ func (m *Manager) Start(ctx context.Context, sessionID uuid.UUID, tracks *whip.T
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
+		m.mu.Lock()
+		delete(m.pipelines, sessionID)
+		m.mu.Unlock()
 		return fmt.Errorf("stdin pipe: %w", err)
 	}
 
@@ -76,6 +85,9 @@ func (m *Manager) Start(ctx context.Context, sessionID uuid.UUID, tracks *whip.T
 
 	if err := cmd.Start(); err != nil {
 		cancel()
+		m.mu.Lock()
+		delete(m.pipelines, sessionID)
+		m.mu.Unlock()
 		return fmt.Errorf("start ffmpeg: %w", err)
 	}
 
@@ -153,20 +165,44 @@ func (p *Pipeline) pumpTracks(tracks *whip.TrackPair) {
 }
 
 func (p *Pipeline) pumpVideo(reader *whip.TrackReader) {
-	writer := h264writer.NewWith(p.stdin)
+	sb := samplebuilder.New(20, &codecs.H264Packet{}, 90000)
 
+	samples := 0
+	packets := 0
 	for {
 		pkt, err := reader.ReadRTP()
 		if err != nil {
 			if err != io.EOF {
 				log.Error().Err(err).Str("session_id", p.sessionID.String()).Msg("video read error")
 			}
+			log.Info().Str("session_id", p.sessionID.String()).Int("samples_written", samples).Int("packets_read", packets).Msg("video pump stopped")
 			return
 		}
 
-		if err := writer.WriteRTP(pkt); err != nil {
-			log.Error().Err(err).Str("session_id", p.sessionID.String()).Msg("video write error")
-			return
+		packets++
+		if packets == 1 {
+			log.Info().Str("session_id", p.sessionID.String()).Uint16("seq", pkt.SequenceNumber).Int("payload", len(pkt.Payload)).Bool("marker", pkt.Marker).Msg("first RTP packet received")
+		}
+		if packets%200 == 0 {
+			log.Debug().Str("session_id", p.sessionID.String()).Int("packets", packets).Int("samples", samples).Msg("video pump progress")
+		}
+
+		sb.Push(pkt)
+
+		for {
+			sample := sb.Pop()
+			if sample == nil {
+				break
+			}
+
+			if _, err := p.stdin.Write(sample.Data); err != nil {
+				log.Error().Err(err).Str("session_id", p.sessionID.String()).Msg("video write error")
+				return
+			}
+			samples++
+			if samples == 1 {
+				log.Info().Str("session_id", p.sessionID.String()).Int("bytes", len(sample.Data)).Msg("first video sample written to ffmpeg")
+			}
 		}
 	}
 }
@@ -189,10 +225,14 @@ func (p *Pipeline) wait() {
 
 func buildFFmpegArgs(outDir string) []string {
 	return []string{
+		"-y",
 		"-hide_banner",
 		"-loglevel", "warning",
 
+		"-err_detect", "ignore_err",
+		"-framerate", "30",
 		"-f", "h264",
+		"-fflags", "+discardcorrupt",
 		"-i", "pipe:0",
 
 		"-filter_complex",
@@ -220,7 +260,5 @@ func buildFFmpegArgs(outDir string) []string {
 		"-master_pl_name", "master.m3u8",
 
 		filepath.Join(outDir, "stream_%v.m3u8"),
-
-		"-y",
 	}
 }
