@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"strconv"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -16,6 +18,9 @@ type Config struct {
 }
 
 func Load() *Config {
+	// .env file is optional — shell env vars always take precedence
+	godotenv.Load()
+
 	return &Config{
 		Port:        getEnvInt("PORT", 8080),
 		DatabaseURL: getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/streaming?sslmode=disable"),
