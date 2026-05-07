@@ -2,30 +2,27 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pion/webrtc/v4"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/auth"
-	"github.com/asmwasim/webrtc-hls-pipeline/internal/metrics"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/chat"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/config"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/events"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/hls"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/metrics"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/recording"
+	"github.com/asmwasim/webrtc-hls-pipeline/internal/server"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/session"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/transcode"
 	"github.com/asmwasim/webrtc-hls-pipeline/internal/whip"
@@ -99,44 +96,19 @@ func main() {
 		recWorker.Enqueue(sessionID, tenantID)
 	})
 
-	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(middleware.Recoverer)
-	r.Use(zerologMiddleware)
-
-	r.Get("/health", healthHandler(pool, rdb))
-	r.Handle("/metrics", promhttp.Handler())
-
-	r.Route("/hls/{sessionID}", func(r chi.Router) {
-		r.Get("/*", hlsHandler.ServeSegments())
+	r := server.NewRouter(server.RouterDeps{
+		Pool:        pool,
+		Redis:       rdb,
+		JWTAuth:     jwtAuth,
+		SessionRepo: sessionRepo,
+		ChatRepo:    chatRepo,
+		ChatHub:     chatHub,
+		HLSHandler:  hlsHandler,
+		WHIPHandler: whipHandler,
+		RecWorker:   recWorker,
 	})
 
-	r.Route("/api/v1", func(r chi.Router) {
-		r.Route("/sessions", func(r chi.Router) {
-			r.With(jwtAuth.Authenticate).Get("/", session.HandleList(sessionRepo))
-			r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Post("/", session.HandleCreate(sessionRepo))
-
-			r.Route("/{sessionID}", func(r chi.Router) {
-				r.With(jwtAuth.Authenticate).Get("/", session.HandleGet(sessionRepo))
-				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Post("/end", session.HandleEnd(sessionRepo))
-				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Post("/whip", whipHandler.HandleWHIP())
-				r.With(jwtAuth.Authenticate, jwtAuth.RequireRole("teacher")).Delete("/whip", whipHandler.HandleDeleteResource())
-				r.With(jwtAuth.Authenticate).Get("/watch", hlsHandler.HandleWatch())
-				r.With(jwtAuth.Authenticate).Get("/chat", chat.HandleWebSocket(chatHub))
-				r.With(jwtAuth.Authenticate).Get("/chat/history", chat.HandleHistory(chatRepo))
-				r.With(jwtAuth.Authenticate).Get("/recording", recording.HandleGetRecording(pool))
-			})
-		})
-	})
-
-	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
+	srv := server.NewServer(r, cfg.Port)
 
 	go func() {
 		log.Info().Int("port", cfg.Port).Msg("starting server")
@@ -157,37 +129,4 @@ func main() {
 		log.Fatal().Err(err).Msg("server forced to shutdown")
 	}
 	log.Info().Msg("server stopped")
-}
-
-func healthHandler(pool *pgxpool.Pool, rdb *redis.Client) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-
-		if err := pool.Ping(ctx); err != nil {
-			http.Error(w, `{"status":"unhealthy","error":"postgres"}`, http.StatusServiceUnavailable)
-			return
-		}
-
-		if err := rdb.Ping(ctx).Err(); err != nil {
-			http.Error(w, `{"status":"unhealthy","error":"redis"}`, http.StatusServiceUnavailable)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"healthy"}`))
-	}
-}
-
-func zerologMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-		next.ServeHTTP(ww, r)
-		log.Info().
-			Str("method", r.Method).
-			Str("path", r.URL.Path).
-			Int("status", ww.Status()).
-			Dur("latency", time.Since(start)).
-			Msg("request")
-	})
 }
