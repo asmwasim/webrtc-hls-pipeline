@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Bash(git commit --no-verify *)",
+      "Bash(git commit * --no-verify *)",
+      "Read(.env)",
+      "Read(.env.*)"
+    ],
+    "ask": [
+      "Bash(rm *)",
+      "Bash(docker *)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git reset *)",
+      "Bash(kill *)",
+      "Bash(pkill *)",
+      "Bash(npm uninstall *)"
+    ],
+    "allow": [
+      "Edit",
+      "Write",
+      "Read",
+      "Read(.env.example)",
+      "Write(.env.example)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git branch *)",
+      "Bash(git checkout *)",
+      "Bash(git switch *)",
+      "Bash(git merge *)",
+      "Bash(git stash *)",
+      "Bash(git show *)",
+      "Bash(go build *)",
+      "Bash(go run *)",
+      "Bash(go test *)",
+      "Bash(go mod *)",
+      "Bash(go vet *)",
+      "Bash(go fmt *)",
+      "Bash(go install *)",
+      "Bash(go generate *)",
+      "Bash(go get *)",
+      "Bash(staticcheck *)",
+      "Bash(golangci-lint *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(node *)",
+      "Bash(ffmpeg *)",
+      "Bash(ffprobe *)",
+      "Bash(ls *)",
+      "Bash(tree *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(wc *)",
+      "Bash(date *)",
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(chmod +x *)",
+      "Bash(curl *)",
+      "Bash(jq *)",
+      "Bash(lsof *)",
+      "Bash(ps *)",
+      "Bash(pgrep *)",
+      "Bash(redis-cli *)",
+      "mcp__plugin_context7_context7__*"
+    ]
+  },
+  "respectGitignore": true,
+  "outputStyle": "default",
+  "effortLevel": "high",
+  "includeGitInstructions": false,
+  "enableAllProjectMcpServers": true,
+  "extraKnownMarketplaces": {
+    "thedotmack": {
+      "source": {
+        "source": "github",
+        "repo": "thedotmack/claude-mem"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "figma@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/hooks/block-no-verify.sh",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/hooks/block-direct-push-main.sh",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/hooks/secret-scan.sh",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}
