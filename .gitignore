@@ -4,6 +4,7 @@ segments/
 web/node_modules/
 web/dist/
 .env
+server
 *.exe
 *.test
 *.out
